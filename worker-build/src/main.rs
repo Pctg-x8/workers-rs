@@ -120,7 +120,7 @@ fn use_glue_import() -> Result<()> {
 fn bundle(esbuild_path: &Path) -> Result<()> {
     let no_minify = !matches!(env::var("NO_MINIFY"), Err(VarError::NotPresent));
     let path = PathBuf::from(OUT_DIR).join(WORKER_SUBDIR).canonicalize()?;
-    let esbuild_path = esbuild_path.canonicalize()?;
+    // let esbuild_path = esbuild_path.canonicalize()?;
     let mut command = Command::new(esbuild_path);
     command.args(&[
         "--external:./index.wasm",
