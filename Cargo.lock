@@ -248,6 +248,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "dunce"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0bd4b30a6560bbd9b4620f4de34c3f14f60848e58a9b7216801afcb4c7b31c3c"
+
+[[package]]
 name = "encoding_rs"
 version = "0.8.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1928,6 +1934,7 @@ version = "0.0.7"
 dependencies = [
  "anyhow",
  "dirs-next",
+ "dunce",
  "flate2",
  "tar",
  "ureq",

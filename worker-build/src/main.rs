@@ -119,7 +119,7 @@ fn use_glue_import() -> Result<()> {
 // Bundles the snippets and worker-related code into a single file.
 fn bundle(esbuild_path: &Path) -> Result<()> {
     let no_minify = !matches!(env::var("NO_MINIFY"), Err(VarError::NotPresent));
-    let path = PathBuf::from(OUT_DIR).join(WORKER_SUBDIR).canonicalize()?;
+    let path = dunce::canonicalize(PathBuf::from(OUT_DIR).join(WORKER_SUBDIR))?;
     // let esbuild_path = esbuild_path.canonicalize()?;
     let mut command = Command::new(esbuild_path);
     command.args(&[

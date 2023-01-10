@@ -16,6 +16,7 @@ dirs-next = "2.0.0"
 flate2 = "1.0.24"
 tar = "0.4.38"
 ureq = { version = "2.4.0", features = ["tls", "gzip"] }
+dunce = "1.0.3"
 
 [dev-dependencies]
 wasm-bindgen-cli-support = "0.2.80"
