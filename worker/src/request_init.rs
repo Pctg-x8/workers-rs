@@ -54,9 +54,9 @@ impl RequestInit {
     }
 }
 
-impl From<&RequestInit> for worker_sys::RequestInit {
+impl From<&RequestInit> for web_sys::RequestInit {
     fn from(req: &RequestInit) -> Self {
-        let mut inner = worker_sys::RequestInit::new();
+        let mut inner = web_sys::RequestInit::new();
         inner.headers(req.headers.as_ref());
         inner.method(req.method.as_ref());
         inner.redirect(req.redirect.into());
@@ -109,7 +109,7 @@ pub struct CfProperties {
     pub cache_ttl: Option<u32>,
     /// This option is a version of the cacheTtl feature which chooses a TTL based on the response’s
     /// status code. If the response to this request has a status code that matches, Cloudflare will
-    /// cache for the instructed time, and override cache instructives sent by the origin. For
+    /// cache for the instructed time, and override cache directives sent by the origin. For
     /// example: { "200-299": 86400, 404: 1, "500-599": 0 }. The value can be any integer, including
     /// zero and negative integers. A value of 0 indicates that the cache asset expires immediately.
     /// Any negative value instructs Cloudflare not to cache at all.
@@ -191,7 +191,7 @@ impl From<&CfProperties> for JsValue {
         set_prop(
             &obj,
             &JsValue::from("cacheTtlByStatus"),
-            &JsValue::from_serde(&ttl_status_map).unwrap_or_default(),
+            &serde_wasm_bindgen::to_value(&ttl_status_map).unwrap_or_default(),
         );
 
         set_prop(
@@ -306,17 +306,12 @@ impl From<PolishConfig> for &str {
 }
 
 #[wasm_bindgen]
-#[derive(Clone, Copy)]
+#[derive(Default, Clone, Copy)]
 pub enum RequestRedirect {
     Error,
+    #[default]
     Follow,
     Manual,
-}
-
-impl Default for RequestRedirect {
-    fn default() -> Self {
-        RequestRedirect::Follow
-    }
 }
 
 impl From<RequestRedirect> for &str {
@@ -329,12 +324,12 @@ impl From<RequestRedirect> for &str {
     }
 }
 
-impl From<RequestRedirect> for worker_sys::RequestRedirect {
+impl From<RequestRedirect> for web_sys::RequestRedirect {
     fn from(redir: RequestRedirect) -> Self {
         match redir {
-            RequestRedirect::Error => worker_sys::RequestRedirect::Error,
-            RequestRedirect::Follow => worker_sys::RequestRedirect::Follow,
-            RequestRedirect::Manual => worker_sys::RequestRedirect::Manual,
+            RequestRedirect::Error => web_sys::RequestRedirect::Error,
+            RequestRedirect::Follow => web_sys::RequestRedirect::Follow,
+            RequestRedirect::Manual => web_sys::RequestRedirect::Manual,
         }
     }
 }

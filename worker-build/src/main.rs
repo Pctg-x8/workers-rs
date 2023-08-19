@@ -1,4 +1,4 @@
-//! Arguments are fowarded directly to wasm-pack
+//! Arguments are forwarded directly to wasm-pack
 
 use std::{
     convert::TryInto,
@@ -7,7 +7,7 @@ use std::{
     fs::{self, File},
     io::{Read, Write},
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
 };
 
 use anyhow::Result;
@@ -16,6 +16,21 @@ const OUT_DIR: &str = "build";
 const OUT_NAME: &str = "index";
 const WORKER_SUBDIR: &str = "worker";
 
+const WASM_IMPORT: &str = r#"let wasm;
+export function __wbg_set_wasm(val) {
+    wasm = val;
+}
+
+"#;
+
+const WASM_IMPORT_REPLACEMENT: &str = r#"
+import wasm from './glue.js';
+
+export function getMemory() {
+    return wasm.memory;
+}
+"#;
+
 mod install;
 
 pub fn main() -> Result<()> {
@@ -23,6 +38,12 @@ pub fn main() -> Result<()> {
     if !cfg!(test) {
         install::ensure_wasm_pack()?;
         wasm_pack_build(env::args_os().skip(1))?;
+    }
+
+    let with_coredump = env::var("COREDUMP").is_ok();
+    if with_coredump {
+        println!("Adding wasm coredump");
+        wasm_coredump()?;
     }
 
     let esbuild_path = install::ensure_esbuild()?;
@@ -41,6 +62,71 @@ pub fn main() -> Result<()> {
     Ok(())
 }
 
+const INSTALL_HELP: &str = "In case you are missing the binary, you can install it using: `cargo install wasm-coredump-rewriter`";
+
+fn wasm_coredump() -> Result<()> {
+    let coredump_flags = env::var("COREDUMP_FLAGS");
+    let coredump_flags: Vec<&str> = if let Ok(flags) = &coredump_flags {
+        flags.split(' ').collect()
+    } else {
+        vec![]
+    };
+
+    let mut child = Command::new("wasm-coredump-rewriter")
+        .args(coredump_flags)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .map_err(|err| {
+            anyhow::anyhow!("failed to spawn wasm-coredump-rewriter: {err}\n\n{INSTALL_HELP}.")
+        })?;
+
+    let input_filename = output_path("index_bg.wasm");
+
+    let input_bytes = {
+        let mut input = File::open(input_filename.clone())
+            .map_err(|err| anyhow::anyhow!("failed to open input file: {err}"))?;
+
+        let mut input_bytes = Vec::new();
+        input
+            .read_to_end(&mut input_bytes)
+            .map_err(|err| anyhow::anyhow!("failed to open input file: {err}"))?;
+
+        input_bytes
+    };
+
+    {
+        let child_stdin = child.stdin.as_mut().unwrap();
+        child_stdin
+            .write_all(&input_bytes)
+            .map_err(|err| anyhow::anyhow!("failed to write input file to rewriter: {err}"))?;
+        // Close stdin to finish and avoid indefinite blocking
+    }
+
+    let output = child
+        .wait_with_output()
+        .map_err(|err| anyhow::anyhow!("failed to get rewriter's status: {err}"))?;
+
+    if output.status.success() {
+        // Open the input file again with truncate to write the output
+        let mut f = fs::OpenOptions::new()
+            .truncate(true)
+            .write(true)
+            .open(input_filename)
+            .map_err(|err| anyhow::anyhow!("failed to open output file: {err}"))?;
+        f.write_all(&output.stdout)
+            .map_err(|err| anyhow::anyhow!("failed to write output file: {err}"))?;
+
+        Ok(())
+    } else {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(anyhow::anyhow!(format!(
+            "failed to run Wasm coredump rewriter: {stdout}\n{stderr}"
+        )))
+    }
+}
+
 fn wasm_pack_build<I, S>(args: I) -> Result<()>
 where
     I: IntoIterator<Item = S>,
@@ -49,9 +135,9 @@ where
     let exit_status = Command::new("wasm-pack")
         .arg("build")
         .arg("--no-typescript")
-        .args(&["--target", "bundler"])
-        .args(&["--out-dir", OUT_DIR])
-        .args(&["--out-name", OUT_NAME])
+        .args(["--target", "bundler"])
+        .args(["--out-dir", OUT_DIR])
+        .args(["--out-name", OUT_NAME])
         .args(args)
         .spawn()?
         .wait()?;
@@ -110,8 +196,7 @@ fn copy_generated_code_to_worker_dir() -> Result<()> {
 fn use_glue_import() -> Result<()> {
     let bindgen_glue_path = worker_path(format!("{OUT_NAME}_bg.js"));
     let old_bindgen_glue = read_file_to_string(&bindgen_glue_path)?;
-    let old_import = format!("import * as wasm from './{OUT_NAME}_bg.wasm'");
-    let fixed_bindgen_glue = old_bindgen_glue.replace(&old_import, "import wasm from './glue.js'");
+    let fixed_bindgen_glue = old_bindgen_glue.replace(WASM_IMPORT, WASM_IMPORT_REPLACEMENT);
     write_string_to_file(bindgen_glue_path, fixed_bindgen_glue)?;
     Ok(())
 }
@@ -122,9 +207,10 @@ fn bundle(esbuild_path: &Path) -> Result<()> {
     let path = dunce::canonicalize(PathBuf::from(OUT_DIR).join(WORKER_SUBDIR))?;
     // let esbuild_path = esbuild_path.canonicalize()?;
     let mut command = Command::new(esbuild_path);
-    command.args(&[
+    command.args([
         "--external:./index.wasm",
         "--external:__STATIC_CONTENT_MANIFEST",
+        "--external:cloudflare:sockets",
         "--format=esm",
         "--bundle",
         "./shim.js",
@@ -153,7 +239,7 @@ fn remove_unused_js() -> Result<()> {
     }
 
     for to_remove in [
-        format!("{}_bg.js", OUT_NAME),
+        format!("{OUT_NAME}_bg.js"),
         "shim.js".into(),
         "glue.js".into(),
     ] {

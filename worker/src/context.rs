@@ -1,6 +1,6 @@
 use std::future::Future;
 
-use crate::worker_sys::context::Context as JsContext;
+use crate::worker_sys::Context as JsContext;
 
 use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::future_to_promise;
@@ -41,5 +41,11 @@ impl Context {
     /// as though the Worker was never invoked.
     pub fn pass_through_on_exception(&self) {
         self.inner.pass_through_on_exception()
+    }
+}
+
+impl AsRef<JsContext> for Context {
+    fn as_ref(&self) -> &JsContext {
+        &self.inner
     }
 }

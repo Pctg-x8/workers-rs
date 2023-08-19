@@ -1,5 +1,8 @@
 use std::{
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex,
+    },
     time::Duration,
 };
 
@@ -7,10 +10,13 @@ use blake2::{Blake2b512, Digest};
 use futures_util::{future::Either, StreamExt, TryStreamExt};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 use worker::*;
 
 mod alarm;
 mod counter;
+mod d1;
+mod r2;
 mod test;
 mod utils;
 
@@ -45,12 +51,12 @@ struct FileSize {
     size: u32,
 }
 
-struct SomeSharedData {
+pub struct SomeSharedData {
     regex: regex::Regex,
 }
 
 fn handle_a_request<D>(req: Request, _ctx: RouteContext<D>) -> Result<Response> {
-    Response::ok(&format!(
+    Response::ok(format!(
         "req at: {}, located at: {:?}, within: {}",
         req.path(),
         req.cf().coordinates().unwrap_or_default(),
@@ -59,7 +65,7 @@ fn handle_a_request<D>(req: Request, _ctx: RouteContext<D>) -> Result<Response> 
 }
 
 async fn handle_async_request<D>(req: Request, _ctx: RouteContext<D>) -> Result<Response> {
-    Response::ok(&format!(
+    Response::ok(format!(
         "[async] req at: {}, located at: {:?}, within: {}",
         req.path(),
         req.cf().coordinates().unwrap_or_default(),
@@ -68,6 +74,8 @@ async fn handle_async_request<D>(req: Request, _ctx: RouteContext<D>) -> Result<
 }
 
 static GLOBAL_STATE: AtomicBool = AtomicBool::new(false);
+
+static GLOBAL_QUEUE_STATE: Mutex<Vec<QueueBody>> = Mutex::new(Vec::new());
 
 // We're able to specify a start event that is called when the WASM is initialized before any
 // requests. This is useful if you have some global state or setup code, like a logger. This is
@@ -279,11 +287,11 @@ pub async fn main(req: Request, env: Env, _ctx: worker::Context) -> Result<Respo
         })
         .post_async("/post-file-size", |mut req, _| async move {
             let bytes = req.bytes().await?;
-            Response::ok(&format!("size = {}", bytes.len()))
+            Response::ok(format!("size = {}", bytes.len()))
         })
         .get("/user/:id/test", |_req, ctx| {
             if let Some(id) = ctx.param("id") {
-                return Response::ok(format!("TEST user id: {}", id));
+                return Response::ok(format!("TEST user id: {id}"));
             }
 
             Response::error("Error", 500)
@@ -315,7 +323,7 @@ pub async fn main(req: Request, env: Env, _ctx: worker::Context) -> Result<Respo
                 ctx.param("id").unwrap_or(&"not found".into())
             ))
         })
-        .get_async("/async-text-echo", |mut req, _ctx| async move {
+        .post_async("/async-text-echo", |mut req, _ctx| async move {
             Response::ok(req.text().await?)
         })
         .get_async("/fetch", |_req, _ctx| async move {
@@ -357,12 +365,18 @@ pub async fn main(req: Request, env: Env, _ctx: worker::Context) -> Result<Respo
             stub.fetch_with_str("https://fake-host/alarm").await
         })
         .get_async("/durable/:id", |_req, ctx| async move {
-            let namespace = ctx.durable_object("COUNTER")?;
+            let namespace = ctx.durable_object("COUNTER").expect("DAWJKHDAD");
             let stub = namespace.id_from_name("A")?.get_stub()?;
             // when calling fetch to a Durable Object, a full URL must be used. Alternatively, a
             // compatibility flag can be provided in wrangler.toml to opt-in to older behavior:
             // https://developers.cloudflare.com/workers/platform/compatibility-dates#durable-object-stubfetch-requires-a-full-url
             stub.fetch_with_str("https://fake-host/").await
+        })
+        .get_async("/durable/put-raw", |req, ctx| async move {
+            let namespace = ctx.durable_object("PUT_RAW_TEST_OBJECT")?;
+            let id = namespace.unique_id()?;
+            let stub = id.get_stub()?;
+            stub.fetch_with_request(req).await
         })
         .get("/secret", |_req, ctx| {
             Response::ok(ctx.secret("SOME_SECRET")?.to_string())
@@ -385,7 +399,12 @@ pub async fn main(req: Request, env: Env, _ctx: worker::Context) -> Result<Respo
         })
         .post_async("/api-data", |mut req, _ctx| async move {
             let data = req.bytes().await?;
-            let mut todo: ApiData = serde_json::from_slice(&data)?;
+            let mut todo: ApiData = match serde_json::from_slice(&data) {
+                Ok(todo) => todo,
+                Err(e) => {
+                    return Response::ok(e.to_string());
+                }
+            };
 
             unsafe { todo.title.as_mut_vec().reverse() };
 
@@ -467,7 +486,7 @@ pub async fn main(req: Request, env: Env, _ctx: worker::Context) -> Result<Respo
             let signal = controller.signal();
 
             let fetch_fut = async {
-                let fetch = Fetch::Url("http://localhost:8787/wait/2000".parse().unwrap());
+                let fetch = Fetch::Url("https://delay.zeb.workers.dev/".parse().unwrap());
                 let mut res = fetch.send_with_signal(&signal).await?;
                 let text = res.text().await?;
                 Ok::<String, worker::Error>(text)
@@ -485,7 +504,7 @@ pub async fn main(req: Request, env: Env, _ctx: worker::Context) -> Result<Respo
                 Either::Left((res, cancelled_fut)) => {
                     // Ensure that the cancelled future returns an AbortError.
                     match cancelled_fut.await {
-                        Err(e) if e.to_string().starts_with("AbortError") => { /* Yay! It worked, let's do nothing to celebrate */},
+                        Err(e) if e.to_string().contains("AbortError") => { /* Yay! It worked, let's do nothing to celebrate */},
                         Err(e) => panic!("Fetch errored with a different error than expected: {:#?}", e),
                         Ok(text) => panic!("Fetch unexpectedly succeeded: {}", text)
                     }
@@ -587,7 +606,7 @@ pub async fn main(req: Request, env: Env, _ctx: worker::Context) -> Result<Respo
         .get_async("/cache-api/get/:key", |_req, ctx| async move {
             if let Some(key) = ctx.param("key") {
                 let cache = Cache::default();
-                if let Some(resp) = cache.get(format!("https://{}", key), true).await? {
+                if let Some(resp) = cache.get(format!("https://{key}"), true).await? {
                     return Ok(resp);
                 } else {
                     return Response::ok("cache miss");
@@ -604,7 +623,7 @@ pub async fn main(req: Request, env: Env, _ctx: worker::Context) -> Result<Respo
                 // Cache API respects Cache-Control headers. Setting s-max-age to 10
                 // will limit the response to be in cache for 10 seconds max
                 resp.headers_mut().set("cache-control", "s-maxage=10")?;
-                cache.put(format!("https://{}", key), resp.cloned()?).await?;
+                cache.put(format!("https://{key}"), resp.cloned()?).await?;
                 return Ok(resp);
             }
             Response::error("key missing", 400)
@@ -613,7 +632,7 @@ pub async fn main(req: Request, env: Env, _ctx: worker::Context) -> Result<Respo
             if let Some(key) = ctx.param("key") {
                 let cache = Cache::default();
 
-                let res = cache.delete(format!("https://{}", key), true).await?;
+                let res = cache.delete(format!("https://{key}"), true).await?;
                 return Response::ok(serde_json::to_string(&res)?);
             }
             Response::error("key missing", 400)
@@ -646,6 +665,59 @@ pub async fn main(req: Request, env: Env, _ctx: worker::Context) -> Result<Respo
                 Ok(resp)
             }
         })
+        .get_async("/remote-by-request", |req, ctx| async move {
+            let fetcher = ctx.service("remote")?;
+            fetcher.fetch_request(req).await
+        })
+        .get_async("/remote-by-path", |req, ctx| async move {
+            let fetcher = ctx.service("remote")?;
+            let mut init = RequestInit::new();
+            init.with_method(Method::Post);
+
+            fetcher.fetch(req.url()?.to_string(), Some(init)).await
+        })
+        .post_async("/queue/send/:id", |_req, ctx| async move {
+            let id = match ctx.param("id").map(|id|Uuid::try_parse(id).ok()).and_then(|u|u) {
+                Some(id) => id,
+                None =>  {
+                    return Response::error("Failed to parse id, expected a UUID", 400);
+                }
+            };
+            let my_queue = match ctx.env.queue("my_queue") {
+                Ok(queue) => queue,
+                Err(err) => {
+                    return Response::error(format!("Failed to get queue: {err:?}"), 500)
+                }
+            };
+            match my_queue.send(&QueueBody {
+                id,
+                id_string: id.to_string(),
+            }).await {
+                Ok(_) => {
+                    Response::ok("Message sent")
+                }
+                Err(err) => {
+                    Response::error(format!("Failed to send message to queue: {err:?}"), 500)
+                }
+            }
+        }).get_async("/queue", |_req, _ctx| async move {
+            let guard = GLOBAL_QUEUE_STATE.lock().unwrap();
+            let messages: Vec<QueueBody> = guard.clone();
+            Response::from_json(&messages)
+        })
+        .get_async("/d1/prepared", d1::prepared_statement)
+        .get_async("/d1/batch", d1::batch)
+        .get_async("/d1/dump", d1::dump)
+        .post_async("/d1/exec", d1::exec)
+        .get_async("/d1/error", d1::error)
+        .get_async("/r2/list-empty", r2::list_empty)
+        .get_async("/r2/list", r2::list)
+        .get_async("/r2/get-empty", r2::get_empty)
+        .get_async("/r2/get", r2::get)
+        .put_async("/r2/put", r2::put)
+        .put_async("/r2/put-properties", r2::put_properties)
+        .put_async("/r2/put-multipart", r2::put_multipart)
+        .delete_async("/r2/delete", r2::delete)
         .or_else_any_method_async("/*catchall", |_, ctx| async move {
             console_log!(
                 "[or_else_any_method_async] caught: {}",
@@ -675,4 +747,25 @@ async fn respond_async<D>(req: Request, _ctx: RouteContext<D>) -> Result<Respons
         headers.set("x-testing", "123").unwrap();
         resp.with_headers(headers)
     })
+}
+
+#[derive(Serialize, Debug, Clone, Deserialize)]
+pub struct QueueBody {
+    pub id: Uuid,
+    pub id_string: String,
+}
+
+#[event(queue)]
+pub async fn queue(message_batch: MessageBatch<QueueBody>, _env: Env, _ctx: Context) -> Result<()> {
+    let mut guard = GLOBAL_QUEUE_STATE.lock().unwrap();
+    for message in message_batch.messages()? {
+        console_log!(
+            "Received queue message {:?}, with id {} and timestamp: {}",
+            message.body,
+            message.id,
+            message.timestamp.to_string()
+        );
+        guard.push(message.body);
+    }
+    Ok(())
 }

@@ -15,32 +15,38 @@ pub use wasm_bindgen;
 pub use wasm_bindgen_futures;
 pub use worker_kv as kv;
 
-pub use cf::Cf;
+pub use cf::{Cf, TlsClientAuth};
 pub use worker_macros::{durable_object, event};
 #[doc(hidden)]
 pub use worker_sys;
 pub use worker_sys::{console_debug, console_error, console_log, console_warn};
 
 pub use crate::abort::*;
-pub use crate::cache::{Cache, CacheDeletionOutcome};
+pub use crate::cache::{Cache, CacheDeletionOutcome, CacheKey};
 pub use crate::context::Context;
 pub use crate::cors::Cors;
+#[cfg(feature = "d1")]
+pub use crate::d1::*;
 pub use crate::date::{Date, DateInit};
 pub use crate::delay::Delay;
 pub use crate::durable::*;
 pub use crate::dynamic_dispatch::*;
-pub use crate::env::{Env, Secret, Var};
+pub use crate::env::{Env, EnvBinding, Secret, Var};
 pub use crate::error::Error;
 pub use crate::fetcher::Fetcher;
 pub use crate::formdata::*;
 pub use crate::global::Fetch;
 pub use crate::headers::Headers;
 pub use crate::http::Method;
+#[cfg(feature = "queue")]
+pub use crate::queue::*;
+pub use crate::r2::*;
 pub use crate::request::Request;
 pub use crate::request_init::*;
 pub use crate::response::{Response, ResponseBody};
 pub use crate::router::{RouteContext, RouteParams, Router};
 pub use crate::schedule::*;
+pub use crate::socket::*;
 pub use crate::streams::*;
 pub use crate::websocket::*;
 
@@ -49,6 +55,9 @@ mod cache;
 mod cf;
 mod context;
 mod cors;
+// Require pub module for macro export
+#[cfg(feature = "d1")]
+pub mod d1;
 mod date;
 mod delay;
 pub mod durable;
@@ -60,11 +69,15 @@ mod formdata;
 mod global;
 mod headers;
 mod http;
+#[cfg(feature = "queue")]
+mod queue;
+mod r2;
 mod request;
 mod request_init;
 mod response;
 mod router;
 mod schedule;
+mod socket;
 mod streams;
 mod websocket;
 

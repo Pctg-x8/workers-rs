@@ -9,11 +9,16 @@ pub enum Error {
     Json((String, u16)),
     JsError(String),
     Internal(JsValue),
+    Io(std::io::Error),
     BindingError(String),
     RouteInsertError(matchit::InsertError),
     RouteNoDataError,
     RustError(String),
     SerdeJsonError(serde_json::Error),
+    #[cfg(feature = "queue")]
+    SerdeWasmBindgenError(serde_wasm_bindgen::Error),
+    #[cfg(feature = "d1")]
+    D1(crate::d1::D1Error),
 }
 
 impl From<worker_kv::KvError> for Error {
@@ -29,35 +34,69 @@ impl From<url::ParseError> for Error {
     }
 }
 
+impl From<serde_wasm_bindgen::Error> for Error {
+    fn from(e: serde_wasm_bindgen::Error) -> Self {
+        let val: JsValue = e.into();
+        val.into()
+    }
+}
+
+#[cfg(feature = "d1")]
+impl From<crate::d1::D1Error> for Error {
+    fn from(e: crate::d1::D1Error) -> Self {
+        Self::D1(e)
+    }
+}
+
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Error::BadEncoding => write!(f, "content-type mismatch"),
             Error::BodyUsed => write!(f, "body has already been read"),
-            Error::Json((msg, status)) => write!(f, "{} (status: {})", msg, status),
+            Error::Json((msg, status)) => write!(f, "{msg} (status: {status})"),
             Error::JsError(s) | Error::RustError(s) => {
-                write!(f, "{}", s)
+                write!(f, "{s}")
             }
             Error::Internal(_) => write!(f, "unrecognized JavaScript object"),
-            Error::BindingError(name) => write!(f, "no binding found for `{}`", name),
-            Error::RouteInsertError(e) => write!(f, "failed to insert route: {}", e),
+            Error::Io(e) => write!(f, "IO Error: {e}"),
+            Error::BindingError(name) => write!(f, "no binding found for `{name}`"),
+            Error::RouteInsertError(e) => write!(f, "failed to insert route: {e}"),
             Error::RouteNoDataError => write!(f, "route has no corresponding shared data"),
-            Error::SerdeJsonError(e) => write!(f, "Serde Error: {}", e),
+            Error::SerdeJsonError(e) => write!(f, "Serde Error: {e}"),
+            #[cfg(feature = "queue")]
+            Error::SerdeWasmBindgenError(e) => write!(f, "Serde Error: {e}"),
+            #[cfg(feature = "d1")]
+            Error::D1(e) => write!(f, "D1: {e:#?}"),
         }
     }
 }
 
 impl std::error::Error for Error {}
 
+// Not sure if the changes I've made here are good or bad...
 impl From<JsValue> for Error {
     fn from(v: JsValue) -> Self {
-        match v
-            .as_string()
-            .or_else(|| v.dyn_ref::<js_sys::Error>().map(|e| e.to_string().into()))
-        {
+        match v.as_string().or_else(|| {
+            v.dyn_ref::<js_sys::Error>().map(|e| {
+                format!(
+                    "Error: {} - Cause: {}",
+                    e.to_string(),
+                    e.cause()
+                        .as_string()
+                        .or_else(|| { Some(e.to_string().into()) })
+                        .unwrap_or(String::from("N/A"))
+                )
+            })
+        }) {
             Some(s) => Self::JsError(s),
             None => Self::Internal(v),
         }
+    }
+}
+
+impl From<std::io::Error> for Error {
+    fn from(error: std::io::Error) -> Self {
+        Self::Io(error)
     }
 }
 

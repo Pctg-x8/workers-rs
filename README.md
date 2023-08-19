@@ -109,7 +109,7 @@ pub async fn main(req: Request, env: Env, _ctx: worker::Context) -> Result<Respo
 
 The project uses [wrangler](https://github.com/cloudflare/wrangler2) version 2.x for running and publishing your Worker.
 
-Get the Rust worker project [template](https://github.com/cloudflare/templates/tree/main/worker-rust) manually, or run the following command:
+Get the Rust worker project [template](https://github.com/cloudflare/workers-sdk/tree/main/templates/experimental/worker-rust) manually, or run the following command:
 ```bash
 npm init cloudflare project_name worker-rust
 cd project_name
@@ -240,6 +240,148 @@ new_classes = ["Chatroom"] # Array of new classes
 - For more information about migrating your Durable Object as it changes, see the docs here:
   https://developers.cloudflare.com/workers/learning/using-durable-objects#durable-object-migrations-in-wranglertoml
 
+## Queues
+
+### Enabling queues
+As queues are in beta you need to enable the `queue` feature flag.
+
+Enable it by adding it to the worker dependency in your `Cargo.toml`: 
+```toml
+worker = {version = "...", features = ["queue"]}
+```
+
+### Example worker consuming and producing messages:
+```rust
+use worker::*;
+use serde::{Deserialize, Serialize};
+#[derive(Serialize, Debug, Clone, Deserialize)]
+pub struct MyType {
+    foo: String,
+    bar: u32,
+}
+
+// Consume messages from a queue
+#[event(queue)]
+pub async fn main(message_batch: MessageBatch<MyType>, env: Env, _ctx: Context) -> Result<()> {
+    // Get a queue with the binding 'my_queue'
+    let my_queue = env.queue("my_queue")?;
+
+    // Deserialize the message batch
+    let messages = message_batch.messages()?;
+
+    // Loop through the messages
+    for message in messages {
+        // Log the message and meta data
+        console_log!(
+            "Got message {:?}, with id {} and timestamp: {}",
+            message.body,
+            message.id,
+            message.timestamp.to_string()
+        );
+
+        // Send the message body to the other queue
+        my_queue.send(&message.body).await?;
+    }
+
+    // Retry all messages
+    message_batch.retry_all();
+    Ok(())
+}
+```
+
+## Testing with Miniflare
+
+In order to test your Rust worker locally, the best approach is to use
+[Miniflare](https://github.com/cloudflare/miniflare). However, because Miniflare
+is a Node package, you will need to write your end-to-end tests in JavaScript or
+TypeScript in your project. The official documentation for writing tests using
+Miniflare is [available here](https://miniflare.dev/testing). This documentation
+being focused on JavaScript / TypeScript codebase, you will need to configure
+as follows to make it work with your Rust-based, WASM-generated worker:
+
+### Step 1: Add Wrangler and Miniflare to your `devDependencies`
+
+```sh
+npm install --save-dev wrangler miniflare
+```
+
+### Step 2: Build your worker before running the tests
+
+Make sure that your worker is built before running your tests by calling the
+following in your build chain:
+
+```sh
+wrangler deploy --dry-run
+```
+
+By default, this should build your worker under the `./build/` directory at the
+root of your project.
+
+### Step 3: Configure your Miniflare instance in your JavaScript / TypeScript tests
+
+To instantiate the `Miniflare` testing instance in your tests, make sure to
+configure its `scriptPath` option to the relative path of where your JavaScript
+worker entrypoint was generated, and its `moduleRules` so that it is able to
+resolve the `*.wasm` file imported from that JavaScript worker:
+
+```js
+// test.mjs
+import assert from "node:assert";
+import { Miniflare } from "miniflare";
+
+const mf = new Miniflare({
+  scriptPath: "./build/worker/shim.mjs",
+  modules: true,
+  modulesRules: [
+    { type: "CompiledWasm", include: ["**/*.wasm"], fallthrough: true }
+  ]
+});
+
+const res = await mf.dispatchFetch("http://localhost");
+assert(res.ok);
+assert.strictEqual(await res.text(), "Hello, World!");
+```
+
+## D1 Databases
+
+### Enabling D1 databases
+As D1 databases are in alpha, you'll need to enable the `d1` feature on the `worker` crate.
+
+```toml
+worker = { version = "x.y.z", features = ["d1"] }
+```
+
+### Example usage
+```rust
+use worker::*;
+
+#[derive(Deserialize)]
+struct Thing {
+	thing_id: String,
+	desc: String,
+	num: u32,
+}
+
+#[event(fetch, respond_with_errors)]
+pub async fn main(request: Request, env: Env, _ctx: Context) -> Result<Response> {
+	Router::new()
+		.get_async("/:id", |_, ctx| async move {
+			let id = ctx.param("id").unwrap()?;
+			let d1 = ctx.env.d1("things-db")?;
+			let statement = d1.prepare("SELECT * FROM things WHERE thing_id = ?1");
+			let query = statement.bind(&[id])?;
+			let result = query.first::<Thing>(None).await?;
+			match result {
+				Some(thing) => Response::from_json(&thing),
+				None => Response::error("Not found", 404),
+			}
+		})
+		.run(request, env)
+		.await
+}
+```
+
+
 # Notes and FAQ
 
 It is exciting to see how much is possible with a framework like this, by expanding the options
@@ -276,7 +418,7 @@ please [take a look](https://www.cloudflare.com/careers/).
 - Most likely, it should, we just haven't had the time to fully implement it or add a library to
   wrap the FFI. Please let us know you need a feature by [opening an issue](https://github.com/cloudflare/workers-rs/issues).
 
-3. My bundle size exceeds Workers 1MB limits, what do I do?
+3. My bundle size exceeds [Workers size limits](https://developers.cloudflare.com/workers/platform/limits/), what do I do?
 
 - We're working on solutions here, but in the meantime you'll need to minimize the number of crates
   your code depends on, or strip as much from the `.wasm` binary as possible. Here are some extra
