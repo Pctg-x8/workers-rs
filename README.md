@@ -17,8 +17,8 @@ pub async fn main(req: Request, env: Env, _ctx: worker::Context) -> Result<Respo
         "{} {}, located at: {:?}, within: {}",
         req.method().to_string(),
         req.path(),
-        req.cf().coordinates().unwrap_or_default(),
-        req.cf().region().unwrap_or("unknown region".into())
+        req.cf().unwrap().coordinates().unwrap_or_default(),
+        req.cf().unwrap().region().unwrap_or("unknown region".into())
     );
 
     if !matches!(req.method(), Method::Post) {
@@ -245,7 +245,7 @@ new_classes = ["Chatroom"] # Array of new classes
 ### Enabling queues
 As queues are in beta you need to enable the `queue` feature flag.
 
-Enable it by adding it to the worker dependency in your `Cargo.toml`: 
+Enable it by adding it to the worker dependency in your `Cargo.toml`:
 ```toml
 worker = {version = "...", features = ["queue"]}
 ```
@@ -423,6 +423,19 @@ please [take a look](https://www.cloudflare.com/careers/).
 - We're working on solutions here, but in the meantime you'll need to minimize the number of crates
   your code depends on, or strip as much from the `.wasm` binary as possible. Here are some extra
   steps you can try: https://rustwasm.github.io/book/reference/code-size.html#optimizing-builds-for-code-size
+
+### ⚠️ Caveats
+
+1. Upgrading worker package to version `0.0.18` and higher
+
+- While upgrading your worker to version `0.0.18` an error `error[E0432]: unresolved import `crate::sys::IoSourceState` can appear.
+  In this case, upgrade `package.edition` to `edition = "2021"` in `wrangler.toml`
+
+```toml
+[package]
+edition = "2021"
+```
+
 
 # Contributing
 

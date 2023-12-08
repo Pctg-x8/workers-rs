@@ -1,8 +1,7 @@
 [package]
-name = "tokio-postgres-on-workers"
+name = "router-on-workers"
 version = "0.1.0"
 edition = "2021"
-resolver = "2"
 
 # https://github.com/rustwasm/wasm-pack/issues/1247
 [package.metadata.wasm-pack.profile.release]
@@ -12,5 +11,8 @@ wasm-opt = false
 crate-type = ["cdylib"]
 
 [dependencies]
-worker = { workspace=true, features=["tokio-postgres"] }
-tokio-postgres = { version="0.7", features=['js'], default-features=false }
+serde = "1.0.188"
+worker = { workspace=true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
